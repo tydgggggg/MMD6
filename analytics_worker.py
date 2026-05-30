@@ -20,18 +20,37 @@ PANEL_USER = "admin"
 PANEL_PASS = secrets.token_hex(4)
 SESSION_TOKEN = secrets.token_hex(16)
 
-# آرایه سراسری ذخیره آخرین لاگ‌های زنده برای نمایش تو صفحه وب
 SYSTEM_LIVE_LOGS = []
-USER_TARGET_SITES = {} # ذخیره مقاصد و سایت‌های باز شده هر کلاینت
+USER_TARGET_SITES = {}
 
 with open('active_edge_host.txt', 'r') as f:
     tunnel_host = f.read().strip()
 
-if os.path.exists(DB_PATH):
-    with open(DB_PATH, 'r') as f:
-        configs_db = json.load(f)
-else:
-    configs_db = {
+# --- مکانیزم فوق پایداری برای جلوگیری از پاک شدن کلاینت‌ها ---
+def load_database():
+    """بارگذاری دیتابیس با قابلیت بازیابی اضطراری از فایل کانفیگ Xray"""
+    # در ابتدا بررسی می‌کنیم اگر فایل دیتابیس محلی وجود دارد آن را بخواند
+    if os.path.exists(DB_PATH):
+        try:
+            with open(DB_PATH, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    # اگر فایل محلی نبود یا خراب بود، تلاش برای نجات داده‌ها از فایل کانفیگ اصلی Xray
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                xray_data = json.load(f)
+            # دیتابیس کلاینت‌ها در روت کانفیگ به صورت کامنت مخفی ذخیره شده است
+            if "_killpv2_db_backup" in xray_data:
+                backup_str = xray_data["_killpv2_db_backup"]
+                return json.loads(base64.b64decode(backup_str.encode('utf-8')).decode('utf-8'))
+        except Exception:
+            pass
+
+    # ساختار اولیه در صورت نبود هیچ دیتابیسی
+    return {
         "Main_kill_pv2": {
             "uuid": "b6a00fb0-460e-4323-96af-3ba2f48470ee",
             "total_limit_bytes": 0,
@@ -46,6 +65,8 @@ else:
             "active": True
         }
     }
+
+configs_db = load_database()
 
 def save_database():
     with open(DB_PATH, 'w') as f:
@@ -78,7 +99,11 @@ def check_expiration_and_limits():
 def sync_xray_core():
     clients = [{"id": u_data["uuid"], "email": u_name, "level": 0} for u_name, u_data in configs_db.items() if u_data.get("active", True)]
     
+    # تبدیل کل دیتابیس کاربران به نسخه بیس۶۴ جهت همگام‌سازی در فایل سیستم ثابت
+    db_backup_string = base64.b64encode(json.dumps(configs_db).encode('utf-8')).decode('utf-8')
+
     xray_json_config = {
+        "_killpv2_db_backup": db_backup_string,  # تزریق بکاپ دیتابیس برای پایداری ۱۰۰٪ کلاینت‌ها
         "log": {
             "loglevel": "info",
             "access": XRAY_LOG_PATH,
@@ -160,10 +185,14 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
             volume_val = float(params.get('volume_value', [0])[0] or 0)
             volume_unit = params.get('volume_unit', ['GB'])[0]
             
+            # 🟢 تصحیح فیکس باگ خوانش حجم مصرفی اولیه از فرانت‌اند
+            initial_used_val = float(params.get('initial_used_value', [0])[0] or 0)
+            initial_used_unit = params.get('initial_used_unit', ['GB'])[0]
+            
             expire_days = int(params.get('expire_days', [0])[0] or 0)
             expire_hours = int(params.get('expire_hours', [0])[0] or 0)
             total_seconds = (expire_days * 86400) + (expire_hours * 3600)
-            if total_seconds <= 0: total_seconds = 2592000 # پیشفرض ۳۰ روز
+            if total_seconds <= 0: total_seconds = 2592000 
             
             clean_ip = params.get('clean_ip', ['speed.cloudflare.com'])[0].strip()
             if not clean_ip: clean_ip = "speed.cloudflare.com"
@@ -175,12 +204,18 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                     final_bytes = int(volume_val * 1024 * 1024 * 1024)
                 else:
                     final_bytes = int(volume_val * 1024 * 1024)
+
+            # محاسبه دقیق حجم اولیه مصرف شده بر حسب بایت
+            if initial_used_unit == 'GB':
+                final_initial_used_bytes = int(initial_used_val * 1024 * 1024 * 1024)
+            else:
+                final_initial_used_bytes = int(initial_used_val * 1024 * 1024)
             
             if username and username not in configs_db:
                 configs_db[username] = {
                     "uuid": str(uuid.uuid4()),
                     "total_limit_bytes": final_bytes,
-                    "used_bytes": 0,
+                    "used_bytes": final_initial_used_bytes, # اعمال مقدار کاستومایز شده
                     "clean_ip": clean_ip,
                     "status": "OFFLINE",
                     "last_active_time": 0,
@@ -263,13 +298,13 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                     "down_speed": format_speed(v.get("down_speed", 0)),
                     "up_speed": format_speed(v.get("up_speed", 0)),
                     "config_raw": vless_config_str,
-                    "destinations": USER_TARGET_SITES.get(k, [])[-12:] # بفرستن آخرین مقاصد کلاینت
+                    "destinations": USER_TARGET_SITES.get(k, [])[-12:]
                 })
             
             final_payload = {
                 "total_online": total_online, 
                 "users": response_data, 
-                "sys_logs": SYSTEM_LIVE_LOGS[-30:] # آخرین لاگهای سرور
+                "sys_logs": SYSTEM_LIVE_LOGS[-30:]
             }
             self.wfile.write(json.dumps(final_payload).encode('utf-8'))
             return
@@ -280,14 +315,12 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                 u_data = configs_db[target_user]
                 c_ip = u_data.get("clean_ip", DEFAULT_CLEAN_IP)
                 
-                # اضافه کردن لایه کامنت متنی در لاین اول ساب‌باکس برای نشان دادن ترافیک زنده به کاربر
                 total_bytes = u_data["total_limit_bytes"]
                 rem_bytes = max(0, total_bytes - u_data["used_bytes"]) if total_bytes > 0 else 0
                 sub_info_comment = f"// USER: {target_user} | USED: {format_bytes(u_data['used_bytes'])} | TOTAL: {format_bytes(total_bytes) if total_bytes > 0 else 'نامحدود'} | REMAINING: {format_bytes(rem_bytes) if total_bytes > 0 else 'نامحدود'}\n"
                 
                 clean_link = f"vless://{u_data['uuid']}@{c_ip}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&host={tunnel_host}&sni={tunnel_host}#{target_user}_Clean"
                 regular_link = f"vless://{u_data['uuid']}@{tunnel_host}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0#{target_user}_Direct"
-                
                 payload = f"{sub_info_comment}{clean_link}\n{regular_link}\n"
                 
                 encoded_payload = base64.b64encode(payload.encode('utf-8')).decode('utf-8')
@@ -395,7 +428,6 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             let data = await res.json();
                             document.getElementById('online_count').innerText = data.total_online;
                             
-                            // رندر سیستم لاگ زنده جامع
                             const term = document.getElementById('sys_terminal');
                             let isScrolledDown = term.scrollHeight - term.clientHeight <= term.scrollTop + 20;
                             term.innerHTML = "";
@@ -404,7 +436,6 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             }});
                             if (isScrolledDown) term.scrollTop = term.scrollHeight;
 
-                            // آپدیت اطلاعات تک تک کلاینت‌ها با تایمر بهینه‌شده ۱۰ ثانیه‌ای فرانت‌اند
                             data.users.forEach(u => {{
                                 let row = document.getElementById('u_' + u.username);
                                 if(row) {{
@@ -462,7 +493,6 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
 
                     function toggleUnlimitedVolume(checkbox) {{
                         const vInput = document.getElementById('volume_value_input');
-                        const vUnit = document.getElementById('volume_unit_select');
                         if (checkbox.checked) {{
                             vInput.disabled = true;
                             vInput.placeholder = "حجم نامحدود فعال شد";
@@ -516,8 +546,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                         box.style.display = box.style.display === 'block' ? 'none' : 'block';
                     }}
 
-                    // هماهنگ شده روی آپدیت زنده ۱۰ ثانیه‌ای فرانت‌اند
-                    setInterval(loadLiveStats, 10000);
+                    setInterval(loadLiveStats, 2000);
                 </script>
             </head>
             <body>
@@ -562,7 +591,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             </div>
 
                             <div class="flex-input">
-                                <input type="number" step="0.1" name="initial_used_value" class="form-control" placeholder="میزان حجم مصرف شده فعلی (اختیاری)" style="margin-bottom:0; flex:2;">
+                                <input type="number" step="0.1" name="initial_used_value" class="form-control" placeholder="میزان حجم مصرف شده اولیه (اختیاری)" style="margin-bottom:0; flex:2;">
                                 <select name="initial_used_unit" style="flex:1;">
                                     <option value="GB">GB</option>
                                     <option value="MB">MB</option>
@@ -678,11 +707,9 @@ def xray_live_log_sniffer():
 
         clean_line = line.strip()
         if clean_line:
-            # ثبت لاگ خام در سیستم لاگ سراسری پنل
             SYSTEM_LIVE_LOGS.append(clean_line)
             if len(SYSTEM_LIVE_LOGS) > 100: SYSTEM_LIVE_LOGS.pop(0)
 
-        # ردیابی پکت واقعی و تفکیک سایت‌ها برای هر کلاینت
         for user_name in list(configs_db.keys()):
             if user_name in clean_line or configs_db[user_name]["uuid"] in clean_line:
                 if configs_db[user_name].get("active", True):
@@ -690,7 +717,6 @@ def xray_live_log_sniffer():
                     configs_db[user_name]["status"] = "ONLINE"
                     configs_db[user_name]["last_active_time"] = now
                     
-                    # اسنیف دامنه یا آی‌پی مقصدی که کلاینت درخواست داده
                     match = re.search(r'tcp:([a-zA-Z0-9.-]+):\d+|accepted\s+([a-zA-Z0-9.-]+):\d+', clean_line, re.IGNORECASE)
                     if match:
                         dst_target = match.group(1) or match.group(2)
@@ -699,7 +725,6 @@ def xray_live_log_sniffer():
                             if dst_target not in USER_TARGET_SITES[user_name]:
                                 USER_TARGET_SITES[user_name].append(dst_target)
                     
-                    # الگوریتم اسنیفر ترافیک واقعی کلاینت (Traffic Sniffer)
                     size_match = re.search(r'size\s+(\d+)|uploaded\s+(\d+)', clean_line, re.IGNORECASE)
                     if size_match:
                         bytes_passed = int(size_match.group(1) or size_match.group(2))
@@ -711,20 +736,16 @@ def xray_live_log_sniffer():
                     configs_db[user_name]["up_speed"] = secrets.randbelow(30000) + 50000
                     save_database()
 
-# اسکریپت بک‌اند عملیاتی بالا می‌آید
 sync_xray_core()
 threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), SanaeiMobileXuiServer).serve_forever(), daemon=True).start()
 threading.Thread(target=xray_live_log_sniffer, daemon=True).start()
 
-# تایمر آپدیت خودکار بک‌اند ۱۰ ثانیه‌ای و سیکل چرخش ۵.۵ ساعته پیوسته پایتون
-total_duration = 19800  # ۵.۵ ساعت به ثانیه
+# چرخه زنده نگه داشتن پایدار سرور برای ۵.۵ ساعت
+total_duration = 19800
 elapsed = 0
-
-print("🚀 Microservice Successfully deployed inside GitHub Runner Ecosystem.", flush=True)
+print("🚀 Microservice deployed inside GitHub Action Engine.", flush=True)
 
 while elapsed < total_duration:
     time.sleep(10)
     elapsed += 10
     check_expiration_and_limits()
-
-print("⏰ 5.5 Hours Cycle completed. Initiating graceful shutdown...", flush=True)
