@@ -1,4 +1,4 @@
-name: kill_pv2 Next-Gen Sub Panel - Phase 2 (Auto-Log URL)
+name: kill_pv2 Ultimate Cyber Panel - Fixed UI & Dynamic Core
 
 on:
   workflow_dispatch:
@@ -52,7 +52,6 @@ jobs:
             listen 8080 default_server;
             listen [::]:8080 default_server;
 
-            # روت اصلی: پنل گرافیکی وب تحت کلودفلر
             location / {
                 proxy_pass http://127.0.0.1:8086;
                 proxy_set_header Host $host;
@@ -62,7 +61,6 @@ jobs:
                 proxy_connect_timeout 75s;
             }
 
-            # لایه اتصال تانل دیتای کلاینت‌ها VLESS
             location /killpv2 {
                 proxy_redirect off;
                 proxy_pass http://127.0.0.1:8085;
@@ -115,10 +113,12 @@ jobs:
         from http.server import BaseHTTPRequestHandler, HTTPServer
         import threading
         import base64
+        import uuid
+        from urllib.parse import parse_qs, urlparse
 
         CONFIG_PATH = "/usr/local/etc/xray/config.json"
         DB_PATH = "panel_db.json"
-        ONLINE_STRICT_TIMEOUT = 90
+        ONLINE_STRICT_TIMEOUT = 45 # حساسیت بالاتر برای وضعیت زنده کاربر
         DEFAULT_CLEAN_IP = "speed.cloudflare.com"
 
         with open('active_edge_host.txt', 'r') as f:
@@ -135,7 +135,8 @@ jobs:
                     "used_bytes": 0,
                     "xray_last_bytes": 0,
                     "status": "OFFLINE",
-                    "last_active_time": 0
+                    "last_active_time": 0,
+                    "active": True
                 }
             }
 
@@ -143,8 +144,9 @@ jobs:
             with open(DB_PATH, 'w') as f:
                 json.dump(configs_db, f, indent=4)
 
-        def build_and_spin_xray():
-            clients = [{"id": u_data["uuid"], "email": u_name, "level": 0} for u_name, u_data in configs_db.items()]
+        def sync_xray_core():
+            # فقط کاربرانی که اکتیو هستند وارد هسته Xray میشن
+            clients = [{"id": u_data["uuid"], "email": u_name, "level": 0} for u_name, u_data in configs_db.items() if u_data.get("active", True)]
             
             xray_json_config = {
                 "log": {"loglevel": "warning"},
@@ -195,15 +197,56 @@ jobs:
             subprocess.run("sudo killall xray || true", shell=True)
             subprocess.run("sudo nohup /usr/local/bin/xray -config /usr/local/etc/xray/config.json > /usr/local/etc/xray/xray_runtime.log 2>&1 &", shell=True)
 
-        class AdvancedWebAndSubServer(BaseHTTPRequestHandler):
+        class UltimateCyberPanelServer(BaseHTTPRequestHandler):
             def log_message(self, format, *args): return
             
+            def do_POST(self):
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                params = parse_qs(post_data)
+                
+                action = params.get('action', [''])[0]
+                
+                if action == 'create':
+                    username = params.get('username', [''])[0].strip()
+                    gb_limit = float(params.get('gb_limit', [10])[0])
+                    if username and username not in configs_db:
+                        configs_db[username] = {
+                            "uuid": str(uuid.uuid4()),
+                            "total_limit_bytes": int(gb_limit * 1024 * 1024 * 1024),
+                            "used_bytes": 0,
+                            "xray_last_bytes": 0,
+                            "status": "OFFLINE",
+                            "last_active_time": 0,
+                            "active": True
+                        }
+                        save_database()
+                        sync_xray_core()
+                        
+                elif action == 'toggle':
+                    username = params.get('username', [''])[0]
+                    if username in configs_db:
+                        configs_db[username]["active"] = not configs_db[username].get("active", True)
+                        save_database()
+                        sync_xray_core()
+                        
+                elif action == 'delete':
+                    username = params.get('username', [''])[0]
+                    if username in configs_db:
+                        del configs_db[username]
+                        save_database()
+                        sync_xray_core()
+                
+                self.send_response(303)
+                self.send_header('Location', '/')
+                self.end_headers()
+
             def do_GET(self):
                 url_path = self.path.strip("/")
                 
                 if url_path.startswith("sub/"):
                     target_user = url_path.replace("sub/", "", 1)
-                    if target_user in configs_db:
+                    if target_user in configs_db and configs_db[target_user].get("active", True):
                         u_data = configs_db[target_user]
                         clean_link = f"vless://{u_data['uuid']}@{DEFAULT_CLEAN_IP}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&host={tunnel_host}&sni={tunnel_host}&mux=1&vnextmux=1#{target_user}_CleanIP"
                         regular_link = f"vless://{u_data['uuid']}@{tunnel_host}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&mux=1&vnextmux=1#{target_user}_Direct"
@@ -228,6 +271,7 @@ jobs:
                     for user_name, user_data in configs_db.items():
                         used_mb = user_data["used_bytes"] / (1024 * 1024)
                         total_bytes = user_data["total_limit_bytes"]
+                        is_active = user_data.get("active", True)
                         
                         if total_bytes == 0:
                             total_str = "نامحدود"
@@ -239,129 +283,201 @@ jobs:
                             remaining_str = f"{remaining_bytes / (1024**3):.2f} GB"
                             progress_percent = min(100, (user_data["used_bytes"] / total_bytes) * 100)
 
-                        status_class = "online-badge" if user_data["status"] == "ONLINE" else "offline-badge"
-                        status_text = "🟢 آنلاین" if user_data["status"] == "ONLINE" else "🔴 آفلاین"
+                        if not is_active:
+                            status_class = "disabled-badge"
+                            status_text = "⚫ غیرفعال"
+                        else:
+                            status_class = "online-badge" if user_data["status"] == "ONLINE" else "offline-badge"
+                            status_text = "🟢 آنلاین" if user_data["status"] == "ONLINE" else "🔴 آفلاین"
+
+                        toggle_label = "خاموش کردن" if is_active else "روشن کردن"
+                        toggle_btn_class = "btn-warning" if is_active else "btn-success"
 
                         table_rows += f"""
                         <tr>
-                            <td><strong>{user_name}</strong></td>
+                            <td><span style="color: #a7f3d0; font-weight: bold;">{user_name}</span></td>
                             <td><span class="{status_class}">{status_text}</span></td>
-                            <td>{used_mb:.2f} MB</td>
+                            <td style="color: #6ee7b7;">{used_mb:.2f} MB</td>
                             <td>{total_str}</td>
-                            <td>{remaining_str}</td>
+                            <td style="color: #fca5a5;">{remaining_str}</td>
                             <td>
                                 <div class="progress-container">
                                     <div class="progress-bar" style="width: {progress_percent}%"></div>
                                 </div>
-                                <small style="color: #a0aec0;">{progress_percent:.1f}%</small>
+                                <span style="font-size: 0.85em; color: #94a3b8; margin-right: 5px;">{progress_percent:.1f}%</span>
+                            </td>
+                            <td>
+                                <div style="display: flex; gap: 5px;">
+                                    <button class="btn-sub" onclick="navigator.clipboard.writeText('https://{tunnel_host}/sub/{user_name}'); alert('لینک ساب کپی شد داداش');">🔗 کپی ساب</button>
+                                    <form method="POST" style="margin:0;"><input type="hidden" name="action" value="toggle"><input type="hidden" name="username" value="{user_name}"><button type="submit" class="btn-action {toggle_btn_class}">{toggle_label}</button></form>
+                                    <form method="POST" style="margin:0;" onsubmit="return confirm('حذف بشه داداش؟');"><input type="hidden" name="action" value="delete"><input type="hidden" name="username" value="{user_name}"><button type="submit" class="btn-action btn-danger">🗑️ حذف</button></form>
+                                </div>
                             </td>
                         </tr>
                         """
 
+                    # UI فوق‌العاده حرفه‌ای و مدرن با استایل سایبرپانک تاریک
                     html_content = f"""
                     <!DOCTYPE html>
                     <html lang="fa" dir="rtl">
                     <head>
                         <meta charset="UTF-8">
                         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>پنل مدیریت هوشمند kill_pv2</title>
+                        <title>🎛️ پنل کنترل سایبر هسته kill_pv2</title>
                         <style>
                             body {{
-                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                                background-color: #0f172a;
-                                color: #f8fafc;
+                                font-family: system-ui, -apple-system, sans-serif;
+                                background: radial-gradient(circle at top, #0f172a, #020617);
+                                color: #e2e8f0;
                                 margin: 0;
                                 padding: 20px;
                             }}
                             .container {{
-                                max-width: 1000px;
+                                max-width: 1100px;
                                 margin: 0 auto;
-                                background: #1e293b;
-                                padding: 25px;
-                                border-radius: 16px;
-                                box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+                                background: rgba(30, 41, 59, 0.7);
+                                border: 1px solid #334155;
+                                backdrop-filter: blur(12px);
+                                padding: 30px;
+                                border-radius: 24px;
+                                box-shadow: 0 20px 40px rgba(0,0,0,0.7);
                             }}
                             h1 {{
                                 text-align: center;
                                 color: #38bdf8;
-                                margin-bottom: 30px;
-                                border-bottom: 2px solid #334155;
-                                padding-bottom: 15px;
+                                font-size: 2.2rem;
+                                text-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
+                                margin-bottom: 5px;
                             }}
+                            .sub-header {{
+                                text-align: center;
+                                color: #64748b;
+                                font-size: 0.95rem;
+                                margin-bottom: 30px;
+                            }}
+                            .creator-card {{
+                                background: rgba(15, 23, 42, 0.6);
+                                border: 1px solid #475569;
+                                padding: 20px;
+                                border-radius: 16px;
+                                margin-bottom: 30px;
+                            }}
+                            .creator-card h3 {{
+                                margin-top: 0;
+                                color: #10b981;
+                            }}
+                            .form-group {{
+                                display: flex;
+                                flex-wrap: wrap;
+                                gap: 15px;
+                                align-items: center;
+                            }}
+                            input, select {{
+                                background: #0f172a;
+                                border: 1px solid #475569;
+                                color: white;
+                                padding: 10px 15px;
+                                border-radius: 10px;
+                                font-size: 0.95rem;
+                                outline: none;
+                            }}
+                            input:focus {{ border-color: #38bdf8; }}
+                            .btn-primary {{
+                                background: #10b981;
+                                border: none;
+                                color: white;
+                                font-weight: bold;
+                                cursor: pointer;
+                                padding: 10px 25px;
+                                border-radius: 10px;
+                                transition: all 0.2s;
+                            }}
+                            .btn-primary:hover {{ background: #059669; box-shadow: 0 0 10px rgba(16,185,129,0.4); }}
                             table {{
                                 width: 100%;
-                                border-collapse: collapse;
+                                border-collapse: separate;
+                                border-spacing: 0 8px;
                                 margin-top: 15px;
                             }}
-                            th, td {{
-                                padding: 14px;
+                            th {{
+                                padding: 12px;
+                                color: #38bdf8;
+                                font-weight: 600;
+                                border-bottom: 2px solid #334155;
                                 text-align: right;
+                            }}
+                            td {{
+                                padding: 16px 12px;
+                                background: rgba(15, 23, 42, 0.4);
+                                border-top: 1px solid #334155;
                                 border-bottom: 1px solid #334155;
                             }}
-                            th {{
-                                background-color: #334155;
-                                color: #38bdf8;
-                            }}
-                            .online-badge {{
-                                background-color: #16a34a;
-                                color: white;
-                                padding: 4px 10px;
-                                border-radius: 20px;
-                                font-size: 0.85em;
-                            }}
-                            .offline-badge {{
-                                background-color: #dc2626;
-                                color: white;
-                                padding: 4px 10px;
-                                border-radius: 20px;
-                                font-size: 0.85em;
-                            }}
+                            td:first-child {{ border-top-right-radius: 12px; border-bottom-right-radius: 12px; border-left: none; }}
+                            td:last-child {{ border-top-left-radius: 12px; border-bottom-left-radius: 12px; border-right: none; }}
+                            .online-badge {{ background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 4px 12px; border-radius: 8px; font-size: 0.85rem; border: 1px solid rgba(16,185,129,0.3); }}
+                            .offline-badge {{ background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 4px 12px; border-radius: 8px; font-size: 0.85rem; border: 1px solid rgba(239,68,68,0.3); }}
+                            .disabled-badge {{ background: rgba(100, 116, 139, 0.2); color: #94a3b8; padding: 4px 12px; border-radius: 8px; font-size: 0.85rem; border: 1px solid rgba(100,116,139,0.3); }}
                             .progress-container {{
-                                width: 120px;
-                                background-color: #475569;
-                                border-radius: 8px;
+                                width: 100px;
+                                background: #334155;
+                                border-radius: 20px;
                                 display: inline-block;
                                 overflow: hidden;
-                                height: 10px;
+                                height: 8px;
                                 vertical-align: middle;
-                                margin-left: 8px;
                             }}
-                            .progress-bar {{
-                                background-color: #38bdf8;
-                                height: 100%;
-                                width: 0%;
-                                transition: width 0.4s ease;
+                            .progress-bar {{ background: linear-gradient(90deg, #38bdf8, #3b82f6); height: 100%; transition: width 0.5s; }}
+                            .btn-action {{
+                                border: none;
+                                padding: 6px 14px;
+                                border-radius: 8px;
+                                font-size: 0.85rem;
+                                font-weight: 500;
+                                cursor: pointer;
+                                color: white;
                             }}
-                            .footer-note {{
-                                text-align: center;
-                                margin-top: 30px;
-                                font-size: 0.9em;
-                                color: #64748b;
-                            }}
+                            .btn-danger {{ background: #ef4444; }} .btn-danger:hover {{ background: #dc2626; }}
+                            .btn-warning {{ background: #f59e0b; color: black; }} .btn-warning:hover {{ background: #d97706; }}
+                            .btn-success {{ background: #3b82f6; }} .btn-success:hover {{ background: #2563eb; }}
+                            .btn-sub {{ background: #475569; color: white; border: none; padding: 6px 14px; border-radius: 8px; font-size: 0.85rem; cursor: pointer; }}
+                            .btn-sub:hover {{ background: #64748b; }}
                         </style>
                         <script>
-                            setInterval(() => {{ window.location.reload(); }}, 8000);
+                            // به روز رسانی خودکار مقادیر مصرف بدون پرش صفحه
+                            setTimeout(() => {{ window.location.reload(); }}, 10000);
                         </script>
                     </head>
                     <body>
                         <div class="container">
-                            <h1>📊 مانیتورینگ زنده ترافیک و وضعیت هسته Xray</h1>
-                            <table>
+                            <h1>🎛️ پنل سایبر هسته اختصاصی kill_pv2</h1>
+                            <div class="sub-header">دامین فعال تونل: {tunnel_host} | سیستم مانیتورینگ بلادرنگ JSON-API</div>
+                            
+                            <div class="creator-card">
+                                <h3>➕ ساخت کانفیگ جدید VLESS</h3>
+                                <form method="POST" class="form-group">
+                                    <input type="hidden" name="action" value="create">
+                                    <input type="text" name="username" placeholder="نام کاربری (مثلا: ali)" required>
+                                    <input type="number" step="0.5" name="gb_limit" placeholder="سقف حجم (گیگابایت)" value="20" required style="width: 150px;">
+                                    <button type="submit" class="btn-primary">⚡ ایجاد و ریلود هسته</button>
+                                </form>
+                            </div>
+
+                            <table style="width:100%;">
                                 <thead>
                                     <tr>
-                                        <th>نام کاربری</th>
-                                        <th>وضعیت اتصال</th>
-                                        <th>حجم مصرف شده</th>
-                                        <th>سقف حجم کل</th>
+                                        <th>کلاینت</th>
+                                        <th>وضعیت شبکه</th>
+                                        <th>مصرف شده</th>
+                                        <th>سقف مجاز</th>
                                         <th>حجم باقی‌مانده</th>
-                                        <th>میزان مصرف (%)</th>
+                                        <th>پیشرفت مصرف</th>
+                                        <th>عملیات مدیریت مدیا</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {table_rows}
                                 </tbody>
                             </table>
-                            <div class="footer-note">⚡ پایداری تضمین شده ضد ۵02 کلودفلر | دامین فعال: {tunnel_host}</div>
                         </div>
                     </body>
                     </html>
@@ -415,6 +531,7 @@ jobs:
                         configs_db[user_name]["last_active_time"] = now
                         db_changed = True
                     else:
+                        # اگر کلاینت دیتا نفرستاد اما زمان کمی گذشته، وضعیت رو آنلاین نگه دار تا باگ آفلاین الکی حل بشه
                         if now - user_data["last_active_time"] > ONLINE_STRICT_TIMEOUT:
                             if configs_db[user_name]["status"] != "OFFLINE":
                                 configs_db[user_name]["status"] = "OFFLINE"
@@ -427,16 +544,15 @@ jobs:
                 if db_changed:
                     save_database()
 
-                # بخش جدید: چاپ تمیز و دائم آدرس‌ها در انتهای هر دوره‌ی لاگ‌گیری
                 print("\n==================== 📊 LIVE STREAMING LOGS ====================")
                 print(user_logs_summary.strip())
                 print("----------------------------------------------------------------")
                 print(f"🔗 WEB PANEL : https://{tunnel_host}")
-                print(f"📡 SUB LINK  : https://{tunnel_host}/sub/Main_kill_pv2")
+                print(f"📡 MAIN SUB  : https://{tunnel_host}/sub/Main_kill_pv2")
                 print("================================================================\n")
 
-        build_and_spin_xray()
-        threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), AdvancedWebAndSubServer).serve_forever(), daemon=True).start()
+        sync_xray_core()
+        threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), UltimateCyberPanelServer).serve_forever(), daemon=True).start()
         threading.Thread(target=rigid_traffic_monitor, daemon=True).start()
         
         time.sleep(19800)
