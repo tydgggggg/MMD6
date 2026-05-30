@@ -1,0 +1,451 @@
+name: kill_pv2 Next-Gen Sub Panel - Phase 2 (Auto-Log URL)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  infrastructure-core:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Codebase
+      uses: actions/checkout@v4
+
+    - name: Environment Preparation (Python & Packages)
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install requests[socks]
+
+    - name: Advanced Network & Linux Kernel Tuning (BBR Enabled)
+      run: |
+        sudo tee -a /etc/sysctl.conf << 'EOF'
+        net.core.default_qdisc = fq
+        net.ipv4.tcp_congestion_control = bbr
+        net.core.rmem_max = 67108864
+        net.core.wmem_max = 67108864
+        net.ipv4.tcp_rmem = 4096 87380 67108864
+        net.ipv4.tcp_wmem = 4096 65536 67108864
+        net.core.netdev_max_backlog = 10000
+        net.ipv4.tcp_max_syn_backlog = 10000
+        net.ipv4.tcp_tw_reuse = 1
+        net.ipv4.tcp_fin_timeout = 15
+        net.ipv4.tcp_keepalive_time = 600
+        EOF
+        sudo sysctl -p
+
+    - name: Native Xray Core Deployment
+      run: |
+        sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+        sudo mkdir -p /usr/local/etc/xray
+        sudo chmod -R 777 /usr/local/etc/xray
+
+    - name: High-Performance Nginx Gateway Configuration
+      run: |
+        sudo apt-get update && sudo apt-get install -y nginx
+        sudo rm -f /etc/nginx/sites-enabled/default
+        
+        cat << 'NGINX_EOF' | sudo tee /etc/nginx/sites-available/killpv2_gateway
+        server {
+            listen 8080 default_server;
+            listen [::]:8080 default_server;
+
+            # روت اصلی: پنل گرافیکی وب تحت کلودفلر
+            location / {
+                proxy_pass http://127.0.0.1:8086;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_read_timeout 300s;
+                proxy_connect_timeout 75s;
+            }
+
+            # لایه اتصال تانل دیتای کلاینت‌ها VLESS
+            location /killpv2 {
+                proxy_redirect off;
+                proxy_pass http://127.0.0.1:8085;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                
+                proxy_buffering off;
+                proxy_read_timeout 52w;
+            }
+        }
+        NGINX_EOF
+        
+        sudo ln -s /etc/nginx/sites-available/killpv2_gateway /etc/nginx/sites-enabled/
+        sudo systemctl restart nginx
+
+    - name: Secure Cloudflare Edge Tunneling
+      run: |
+        wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+        
+        nohup cloudflared tunnel --url http://localhost:8080 > cloudflare_edge.log 2>&1 &
+        
+        for i in {1..30}; do
+          HOST=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' cloudflare_edge.log | head -n 1 | sed 's/https:\/\///g')
+          if [ ! -z "$HOST" ]; then
+              echo "🎯 Edge Core Active: $HOST"
+              echo "$HOST" > active_edge_host.txt
+              break
+          fi
+          echo "🔄 Deploying Tunnel Pipeline... ($i/30)"
+          sleep 2
+        done
+        
+        if [ ! -f active_edge_host.txt ]; then
+          echo "🚨 Critical Error: Edge Tunneling Failed!"
+          exit 1
+        fi
+
+    - name: Execute Core Engine Architecture
+      run: |
+        cat << 'PYTHON_EOF' > engine_core.py
+        import subprocess
+        import os
+        import time
+        import json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        import base64
+
+        CONFIG_PATH = "/usr/local/etc/xray/config.json"
+        DB_PATH = "panel_db.json"
+        ONLINE_STRICT_TIMEOUT = 90
+        DEFAULT_CLEAN_IP = "speed.cloudflare.com"
+
+        with open('active_edge_host.txt', 'r') as f:
+            tunnel_host = f.read().strip()
+
+        if os.path.exists(DB_PATH):
+            with open(DB_PATH, 'r') as f:
+                configs_db = json.load(f)
+        else:
+            configs_db = {
+                "Main_kill_pv2": {
+                    "uuid": "b6a00fb0-460e-4323-96af-3ba2f48470ee",
+                    "total_limit_bytes": 53687091200,
+                    "used_bytes": 0,
+                    "xray_last_bytes": 0,
+                    "status": "OFFLINE",
+                    "last_active_time": 0
+                }
+            }
+
+        def save_database():
+            with open(DB_PATH, 'w') as f:
+                json.dump(configs_db, f, indent=4)
+
+        def build_and_spin_xray():
+            clients = [{"id": u_data["uuid"], "email": u_name, "level": 0} for u_name, u_data in configs_db.items()]
+            
+            xray_json_config = {
+                "log": {"loglevel": "warning"},
+                "api": {"tag": "api_routing", "services": ["StatsService"]},
+                "stats": {},
+                "policy": {
+                    "levels": {
+                        "0": {
+                            "statsUserUplink": True,
+                            "statsUserDownlink": True,
+                            "handshake": 4,
+                            "connIdle": 300,
+                            "uplinkOnly": 2,
+                            "downlinkOnly": 5
+                        }
+                    },
+                    "system": {"statsInboundUplink": True, "statsInboundDownlink": True}
+                },
+                "inbounds": [
+                    {
+                        "port": 8085,
+                        "protocol": "vless",
+                        "settings": {"clients": clients, "decryption": "none"},
+                        "streamSettings": {
+                            "network": "ws", 
+                            "wsSettings": {"path": "/killpv2"}
+                        },
+                        "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
+                    },
+                    {
+                        "listen": "127.0.0.1",
+                        "port": 10085,
+                        "protocol": "dokodemo-door",
+                        "settings": {"address": "127.0.0.1"},
+                        "tag": "api_routing"
+                    }
+                ],
+                "outbounds": [{"protocol": "freedom", "tag": "direct_out"}, {"protocol": "freedom", "tag": "api_out"}],
+                "routing": {
+                    "domainStrategy": "AsIs",
+                    "rules": [{"type": "field", "inboundTag": ["api_routing"], "outboundTag": "api_out"}]
+                }
+            }
+            
+            with open(CONFIG_PATH, 'w') as f:
+                json.dump(xray_json_config, f, indent=4)
+                
+            subprocess.run("sudo killall xray || true", shell=True)
+            subprocess.run("sudo nohup /usr/local/bin/xray -config /usr/local/etc/xray/config.json > /usr/local/etc/xray/xray_runtime.log 2>&1 &", shell=True)
+
+        class AdvancedWebAndSubServer(BaseHTTPRequestHandler):
+            def log_message(self, format, *args): return
+            
+            def do_GET(self):
+                url_path = self.path.strip("/")
+                
+                if url_path.startswith("sub/"):
+                    target_user = url_path.replace("sub/", "", 1)
+                    if target_user in configs_db:
+                        u_data = configs_db[target_user]
+                        clean_link = f"vless://{u_data['uuid']}@{DEFAULT_CLEAN_IP}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&host={tunnel_host}&sni={tunnel_host}&mux=1&vnextmux=1#{target_user}_CleanIP"
+                        regular_link = f"vless://{u_data['uuid']}@{tunnel_host}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&mux=1&vnextmux=1#{target_user}_Direct"
+                        payload = f"{clean_link}\n{regular_link}\n"
+                        encoded_payload = base64.b64encode(payload.encode('utf-8')).decode('utf-8')
+                        
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(encoded_payload.encode('utf-8'))
+                        return
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+                if url_path == "" or url_path == "index.html":
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    
+                    table_rows = ""
+                    for user_name, user_data in configs_db.items():
+                        used_mb = user_data["used_bytes"] / (1024 * 1024)
+                        total_bytes = user_data["total_limit_bytes"]
+                        
+                        if total_bytes == 0:
+                            total_str = "نامحدود"
+                            remaining_str = "نامحدود"
+                            progress_percent = 0
+                        else:
+                            total_str = f"{total_bytes / (1024**3):.2f} GB"
+                            remaining_bytes = max(0, total_bytes - user_data["used_bytes"])
+                            remaining_str = f"{remaining_bytes / (1024**3):.2f} GB"
+                            progress_percent = min(100, (user_data["used_bytes"] / total_bytes) * 100)
+
+                        status_class = "online-badge" if user_data["status"] == "ONLINE" else "offline-badge"
+                        status_text = "🟢 آنلاین" if user_data["status"] == "ONLINE" else "🔴 آفلاین"
+
+                        table_rows += f"""
+                        <tr>
+                            <td><strong>{user_name}</strong></td>
+                            <td><span class="{status_class}">{status_text}</span></td>
+                            <td>{used_mb:.2f} MB</td>
+                            <td>{total_str}</td>
+                            <td>{remaining_str}</td>
+                            <td>
+                                <div class="progress-container">
+                                    <div class="progress-bar" style="width: {progress_percent}%"></div>
+                                </div>
+                                <small style="color: #a0aec0;">{progress_percent:.1f}%</small>
+                            </td>
+                        </tr>
+                        """
+
+                    html_content = f"""
+                    <!DOCTYPE html>
+                    <html lang="fa" dir="rtl">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>پنل مدیریت هوشمند kill_pv2</title>
+                        <style>
+                            body {{
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                background-color: #0f172a;
+                                color: #f8fafc;
+                                margin: 0;
+                                padding: 20px;
+                            }}
+                            .container {{
+                                max-width: 1000px;
+                                margin: 0 auto;
+                                background: #1e293b;
+                                padding: 25px;
+                                border-radius: 16px;
+                                box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+                            }}
+                            h1 {{
+                                text-align: center;
+                                color: #38bdf8;
+                                margin-bottom: 30px;
+                                border-bottom: 2px solid #334155;
+                                padding-bottom: 15px;
+                            }}
+                            table {{
+                                width: 100%;
+                                border-collapse: collapse;
+                                margin-top: 15px;
+                            }}
+                            th, td {{
+                                padding: 14px;
+                                text-align: right;
+                                border-bottom: 1px solid #334155;
+                            }}
+                            th {{
+                                background-color: #334155;
+                                color: #38bdf8;
+                            }}
+                            .online-badge {{
+                                background-color: #16a34a;
+                                color: white;
+                                padding: 4px 10px;
+                                border-radius: 20px;
+                                font-size: 0.85em;
+                            }}
+                            .offline-badge {{
+                                background-color: #dc2626;
+                                color: white;
+                                padding: 4px 10px;
+                                border-radius: 20px;
+                                font-size: 0.85em;
+                            }}
+                            .progress-container {{
+                                width: 120px;
+                                background-color: #475569;
+                                border-radius: 8px;
+                                display: inline-block;
+                                overflow: hidden;
+                                height: 10px;
+                                vertical-align: middle;
+                                margin-left: 8px;
+                            }}
+                            .progress-bar {{
+                                background-color: #38bdf8;
+                                height: 100%;
+                                width: 0%;
+                                transition: width 0.4s ease;
+                            }}
+                            .footer-note {{
+                                text-align: center;
+                                margin-top: 30px;
+                                font-size: 0.9em;
+                                color: #64748b;
+                            }}
+                        </style>
+                        <script>
+                            setInterval(() => {{ window.location.reload(); }}, 8000);
+                        </script>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <h1>📊 مانیتورینگ زنده ترافیک و وضعیت هسته Xray</h1>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>نام کاربری</th>
+                                        <th>وضعیت اتصال</th>
+                                        <th>حجم مصرف شده</th>
+                                        <th>سقف حجم کل</th>
+                                        <th>حجم باقی‌مانده</th>
+                                        <th>میزان مصرف (%)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {table_rows}
+                                </tbody>
+                            </table>
+                            <div class="footer-note">⚡ پایداری تضمین شده ضد ۵02 کلودفلر | دامین فعال: {tunnel_host}</div>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    self.wfile.write(html_content.encode('utf-8'))
+                    return
+                
+                self.send_response(404)
+                self.end_headers()
+
+        def rigid_traffic_monitor():
+            while True:
+                time.sleep(6)
+                now = time.time()
+                
+                cmd = '/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 --pattern="user>>>" --reset=false'
+                execution = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                raw_output = execution.stdout.strip() if execution.stdout else ""
+                
+                api_stats_list = []
+                if raw_output:
+                    try:
+                        parsed_json = json.loads(raw_output)
+                        api_stats_list = parsed_json.get("stat", [])
+                    except Exception:
+                        pass
+
+                db_changed = False
+                user_logs_summary = ""
+                
+                for user_name, user_data in configs_db.items():
+                    downlink_bytes = 0
+                    uplink_bytes = 0
+                    
+                    for stat_item in api_stats_list:
+                        metric_name = stat_item.get("name", "")
+                        metric_value = int(stat_item.get("value", 0))
+                        
+                        if user_name in metric_name:
+                            if "downlink" in metric_name:
+                                downlink_bytes = metric_value
+                            elif "uplink" in metric_name:
+                                uplink_bytes = metric_value
+                                
+                    total_current_bytes = downlink_bytes + uplink_bytes
+                    byte_difference = total_current_bytes - user_data["xray_last_bytes"]
+                    
+                    if byte_difference > 0:
+                        configs_db[user_name]["used_bytes"] += byte_difference
+                        configs_db[user_name]["status"] = "ONLINE"
+                        configs_db[user_name]["last_active_time"] = now
+                        db_changed = True
+                    else:
+                        if now - user_data["last_active_time"] > ONLINE_STRICT_TIMEOUT:
+                            if configs_db[user_name]["status"] != "OFFLINE":
+                                configs_db[user_name]["status"] = "OFFLINE"
+                                db_changed = True
+                            
+                    configs_db[user_name]["xray_last_bytes"] = total_current_bytes
+                    mb_usage = configs_db[user_name]["used_bytes"] / (1024 * 1024)
+                    user_logs_summary += f"👤 User: {user_name} | Status: {configs_db[user_name]['status']} | Used: {mb_usage:.2f} MB\n"
+                
+                if db_changed:
+                    save_database()
+
+                # بخش جدید: چاپ تمیز و دائم آدرس‌ها در انتهای هر دوره‌ی لاگ‌گیری
+                print("\n==================== 📊 LIVE STREAMING LOGS ====================")
+                print(user_logs_summary.strip())
+                print("----------------------------------------------------------------")
+                print(f"🔗 WEB PANEL : https://{tunnel_host}")
+                print(f"📡 SUB LINK  : https://{tunnel_host}/sub/Main_kill_pv2")
+                print("================================================================\n")
+
+        build_and_spin_xray()
+        threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), AdvancedWebAndSubServer).serve_forever(), daemon=True).start()
+        threading.Thread(target=rigid_traffic_monitor, daemon=True).start()
+        
+        time.sleep(19800)
+        PYTHON_EOF
+        python3 -u engine_core.py
+
+    - name: Pipeline Succession Chain Trigger
+      env:
+        GH_TOKEN: ${{ secrets.GH_PAT }}
+      run: |
+        gh workflow run panel.yml --ref main
+        echo "⛓️ Next loop chain activated smoothly."
