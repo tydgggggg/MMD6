@@ -20,8 +20,9 @@ PANEL_USER = "admin"
 PANEL_PASS = secrets.token_hex(4)
 SESSION_TOKEN = secrets.token_hex(16)
 
+# آرایه سراسری ذخیره آخرین لاگ‌های زنده برای نمایش تو صفحه وب
 SYSTEM_LIVE_LOGS = []
-USER_TARGET_SITES = {}
+USER_TARGET_SITES = {} # ذخیره مقاصد و سایت‌های باز شده هر کلاینت
 
 with open('active_edge_host.txt', 'r') as f:
     tunnel_host = f.read().strip()
@@ -159,21 +160,10 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
             volume_val = float(params.get('volume_value', [0])[0] or 0)
             volume_unit = params.get('volume_unit', ['GB'])[0]
             
-            # دریافت حجم مصرف شده فعلی کلاینت موقع ساخت (اختیاری)
-            initial_used_val = float(params.get('initial_used_value', [0])[0] or 0)
-            initial_used_unit = params.get('initial_used_unit', ['GB'])[0]
-            if initial_used_val > 0:
-                if initial_used_unit == 'GB':
-                    initial_used_bytes = int(initial_used_val * 1024 * 1024 * 1024)
-                else:
-                    initial_used_bytes = int(initial_used_val * 1024 * 1024)
-            else:
-                initial_used_bytes = 0
-            
             expire_days = int(params.get('expire_days', [0])[0] or 0)
             expire_hours = int(params.get('expire_hours', [0])[0] or 0)
             total_seconds = (expire_days * 86400) + (expire_hours * 3600)
-            if total_seconds <= 0: total_seconds = 2592000 
+            if total_seconds <= 0: total_seconds = 2592000 # پیشفرض ۳۰ روز
             
             clean_ip = params.get('clean_ip', ['speed.cloudflare.com'])[0].strip()
             if not clean_ip: clean_ip = "speed.cloudflare.com"
@@ -190,7 +180,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                 configs_db[username] = {
                     "uuid": str(uuid.uuid4()),
                     "total_limit_bytes": final_bytes,
-                    "used_bytes": initial_used_bytes, # تنظیم حجم اولیه استفاده شده
+                    "used_bytes": 0,
                     "clean_ip": clean_ip,
                     "status": "OFFLINE",
                     "last_active_time": 0,
@@ -273,36 +263,32 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                     "down_speed": format_speed(v.get("down_speed", 0)),
                     "up_speed": format_speed(v.get("up_speed", 0)),
                     "config_raw": vless_config_str,
-                    "destinations": USER_TARGET_SITES.get(k, [])[-12:]
+                    "destinations": USER_TARGET_SITES.get(k, [])[-12:] # بفرستن آخرین مقاصد کلاینت
                 })
             
             final_payload = {
                 "total_online": total_online, 
                 "users": response_data, 
-                "sys_logs": SYSTEM_LIVE_LOGS[-30:] 
+                "sys_logs": SYSTEM_LIVE_LOGS[-30:] # آخرین لاگهای سرور
             }
             self.wfile.write(json.dumps(final_payload).encode('utf-8'))
             return
 
         if url_path.startswith("sub/"):
             target_user = url_path.replace("sub/", "", 1)
-            if target_user in configs_db:
+            if target_user in configs_db and configs_db[target_user].get("active", True):
                 u_data = configs_db[target_user]
+                c_ip = u_data.get("clean_ip", DEFAULT_CLEAN_IP)
                 
-                # اضافه کردن کامنت اطلاعات حجم و زمان به اول ساب باکس کاربر
-                total_vol = format_bytes(u_data['total_limit_bytes']) if u_data['total_limit_bytes'] > 0 else "نامحدود"
-                used_vol = format_bytes(u_data['used_bytes'])
-                rem_vol = format_bytes(max(0, u_data['total_limit_bytes'] - u_data['used_bytes'])) if u_data['total_limit_bytes'] > 0 else "نامحدود"
+                # اضافه کردن لایه کامنت متنی در لاین اول ساب‌باکس برای نشان دادن ترافیک زنده به کاربر
+                total_bytes = u_data["total_limit_bytes"]
+                rem_bytes = max(0, total_bytes - u_data["used_bytes"]) if total_bytes > 0 else 0
+                sub_info_comment = f"// USER: {target_user} | USED: {format_bytes(u_data['used_bytes'])} | TOTAL: {format_bytes(total_bytes) if total_bytes > 0 else 'نامحدود'} | REMAINING: {format_bytes(rem_bytes) if total_bytes > 0 else 'نامحدود'}\n"
                 
-                info_comment = f"// USER: {target_user} | USED: {used_vol} | TOTAL: {total_vol} | REMAINING: {rem_vol}\n"
+                clean_link = f"vless://{u_data['uuid']}@{c_ip}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&host={tunnel_host}&sni={tunnel_host}#{target_user}_Clean"
+                regular_link = f"vless://{u_data['uuid']}@{tunnel_host}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0#{target_user}_Direct"
                 
-                if u_data.get("active", True):
-                    c_ip = u_data.get("clean_ip", DEFAULT_CLEAN_IP)
-                    clean_link = f"vless://{u_data['uuid']}@{c_ip}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0&host={tunnel_host}&sni={tunnel_host}#{target_user}_Clean"
-                    regular_link = f"vless://{u_data['uuid']}@{tunnel_host}:443?path=%2Fkillpv2&security=tls&encryption=none&insecure=0&type=ws&allowInsecure=0#{target_user}_Direct"
-                    payload = f"{info_comment}{clean_link}\n{regular_link}\n"
-                else:
-                    payload = f"{info_comment}// CONFIG EXPIRED OR DISABLED\n"
+                payload = f"{sub_info_comment}{clean_link}\n{regular_link}\n"
                 
                 encoded_payload = base64.b64encode(payload.encode('utf-8')).decode('utf-8')
                 self.send_response(200)
@@ -409,6 +395,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             let data = await res.json();
                             document.getElementById('online_count').innerText = data.total_online;
                             
+                            // رندر سیستم لاگ زنده جامع
                             const term = document.getElementById('sys_terminal');
                             let isScrolledDown = term.scrollHeight - term.clientHeight <= term.scrollTop + 20;
                             term.innerHTML = "";
@@ -417,6 +404,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             }});
                             if (isScrolledDown) term.scrollTop = term.scrollHeight;
 
+                            // آپدیت اطلاعات تک تک کلاینت‌ها با تایمر بهینه‌شده ۱۰ ثانیه‌ای فرانت‌اند
                             data.users.forEach(u => {{
                                 let row = document.getElementById('u_' + u.username);
                                 if(row) {{
@@ -528,7 +516,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                         box.style.display = box.style.display === 'block' ? 'none' : 'block';
                     }}
 
-                    // فیکس زمان آپدیت ۱۰ ثانیه‌ای فرانت برای پایداری بیشتر
+                    // هماهنگ شده روی آپدیت زنده ۱۰ ثانیه‌ای فرانت‌اند
                     setInterval(loadLiveStats, 10000);
                 </script>
             </head>
@@ -574,7 +562,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                             </div>
 
                             <div class="flex-input">
-                                <input type="number" step="0.1" name="initial_used_value" class="form-control" placeholder="میزان حجم مصرف شده فعلی (اختیاری)" value="0" style="margin-bottom:0; flex:2;">
+                                <input type="number" step="0.1" name="initial_used_value" class="form-control" placeholder="میزان حجم مصرف شده فعلی (اختیاری)" style="margin-bottom:0; flex:2;">
                                 <select name="initial_used_unit" style="flex:1;">
                                     <option value="GB">GB</option>
                                     <option value="MB">MB</option>
@@ -662,18 +650,13 @@ def xray_live_log_sniffer():
     log_file = open(XRAY_LOG_PATH, "r")
     log_file.seek(0, os.SEEK_END)
 
-    # آپدیت تایمر مرکزی: بررسی انقضا، ریست کردن سرعت کلاینت‌های غیرفعال و ذخیره خودکار هر ۱۰ ثانیه
-    def global_sync_timer():
+    def speed_resetter():
         while True:
-            time.sleep(10)
+            time.sleep(3)
             now = time.time()
             changed = False
-            
-            # اجرای متد چک کردن ترافیک کلی و زمان انقضا کلاینت‌ها
-            check_expiration_and_limits()
-            
             for u_name, u_data in configs_db.items():
-                if now - u_data.get("last_active_time", 0) > 12:
+                if now - u_data.get("last_active_time", 0) > 8:
                     if u_data["down_speed"] > 0 or u_data["up_speed"] > 0:
                         configs_db[u_name]["down_speed"] = 0
                         configs_db[u_name]["up_speed"] = 0
@@ -685,7 +668,7 @@ def xray_live_log_sniffer():
             if changed:
                 save_database()
 
-    threading.Thread(target=global_sync_timer, daemon=True).start()
+    threading.Thread(target=speed_resetter, daemon=True).start()
 
     while True:
         line = log_file.readline()
@@ -695,9 +678,11 @@ def xray_live_log_sniffer():
 
         clean_line = line.strip()
         if clean_line:
+            # ثبت لاگ خام در سیستم لاگ سراسری پنل
             SYSTEM_LIVE_LOGS.append(clean_line)
             if len(SYSTEM_LIVE_LOGS) > 100: SYSTEM_LIVE_LOGS.pop(0)
 
+        # ردیابی پکت واقعی و تفکیک سایت‌ها برای هر کلاینت
         for user_name in list(configs_db.keys()):
             if user_name in clean_line or configs_db[user_name]["uuid"] in clean_line:
                 if configs_db[user_name].get("active", True):
@@ -705,6 +690,7 @@ def xray_live_log_sniffer():
                     configs_db[user_name]["status"] = "ONLINE"
                     configs_db[user_name]["last_active_time"] = now
                     
+                    # اسنیف دامنه یا آی‌پی مقصدی که کلاینت درخواست داده
                     match = re.search(r'tcp:([a-zA-Z0-9.-]+):\d+|accepted\s+([a-zA-Z0-9.-]+):\d+', clean_line, re.IGNORECASE)
                     if match:
                         dst_target = match.group(1) or match.group(2)
@@ -713,6 +699,7 @@ def xray_live_log_sniffer():
                             if dst_target not in USER_TARGET_SITES[user_name]:
                                 USER_TARGET_SITES[user_name].append(dst_target)
                     
+                    # الگوریتم اسنیفر ترافیک واقعی کلاینت (Traffic Sniffer)
                     size_match = re.search(r'size\s+(\d+)|uploaded\s+(\d+)', clean_line, re.IGNORECASE)
                     if size_match:
                         bytes_passed = int(size_match.group(1) or size_match.group(2))
@@ -724,9 +711,20 @@ def xray_live_log_sniffer():
                     configs_db[user_name]["up_speed"] = secrets.randbelow(30000) + 50000
                     save_database()
 
+# اسکریپت بک‌اند عملیاتی بالا می‌آید
 sync_xray_core()
 threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), SanaeiMobileXuiServer).serve_forever(), daemon=True).start()
 threading.Thread(target=xray_live_log_sniffer, daemon=True).start()
 
-# ۵.۵ ساعت کارکرد مداوم اکشنز قبل از ریست خودکار لوپ
-time.sleep(19800)
+# تایمر آپدیت خودکار بک‌اند ۱۰ ثانیه‌ای و سیکل چرخش ۵.۵ ساعته پیوسته پایتون
+total_duration = 19800  # ۵.۵ ساعت به ثانیه
+elapsed = 0
+
+print("🚀 Microservice Successfully deployed inside GitHub Runner Ecosystem.", flush=True)
+
+while elapsed < total_duration:
+    time.sleep(10)
+    elapsed += 10
+    check_expiration_and_limits()
+
+print("⏰ 5.5 Hours Cycle completed. Initiating graceful shutdown...", flush=True)
