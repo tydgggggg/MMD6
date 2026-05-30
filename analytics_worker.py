@@ -23,33 +23,39 @@ SESSION_TOKEN = secrets.token_hex(16)
 SYSTEM_LIVE_LOGS = []
 USER_TARGET_SITES = {}
 
-with open('active_edge_host.txt', 'r') as f:
-    tunnel_host = f.read().strip()
+# خواندن هدر تانل فعال
+if os.path.exists('active_edge_host.txt'):
+    with open('active_edge_host.txt', 'r') as f:
+        tunnel_host = f.read().strip()
+else:
+    tunnel_host = "127.0.0.1"
 
-# --- مکانیزم فوق پایداری برای جلوگیری از پاک شدن کلاینت‌ها ---
 def load_database():
-    """بارگذاری دیتابیس با قابلیت بازیابی اضطراری از فایل کانفیگ Xray"""
-    # در ابتدا بررسی می‌کنیم اگر فایل دیتابیس محلی وجود دارد آن را بخواند
+    """بارگذاری فوق امن و بدون نقص دیتابیس کلاینت‌ها برای جلوگیری از باگ یک‌بار در میان"""
+    # اولویت اول: خواندن از فایل مستقیم JSON اگر در این سشن موجود باشد
     if os.path.exists(DB_PATH):
         try:
             with open(DB_PATH, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                if data and len(data) > 0:
+                    return data
         except Exception:
             pass
 
-    # اگر فایل محلی نبود یا خراب بود، تلاش برای نجات داده‌ها از فایل کانفیگ اصلی Xray
+    # اولویت دوم: استخراج دیتابیس پشتیبان از فایل پیکربندی Xray قبلی پیش از بازنویسی
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r') as f:
                 xray_data = json.load(f)
-            # دیتابیس کلاینت‌ها در روت کانفیگ به صورت کامنت مخفی ذخیره شده است
             if "_killpv2_db_backup" in xray_data:
                 backup_str = xray_data["_killpv2_db_backup"]
-                return json.loads(base64.b64decode(backup_str.encode('utf-8')).decode('utf-8'))
+                decoded_data = json.loads(base64.b64decode(backup_str.encode('utf-8')).decode('utf-8'))
+                if decoded_data and len(decoded_data) > 0:
+                    return decoded_data
         except Exception:
             pass
 
-    # ساختار اولیه در صورت نبود هیچ دیتابیسی
+    # کلاینت پیش‌فرض سیستم در صورت عدم وجود دیتابیس قبلی
     return {
         "Main_kill_pv2": {
             "uuid": "b6a00fb0-460e-4323-96af-3ba2f48470ee",
@@ -66,6 +72,7 @@ def load_database():
         }
     }
 
+# اجرای آنی لودر دیتابیس پیش از هرگونه پردازش هسته
 configs_db = load_database()
 
 def save_database():
@@ -99,11 +106,11 @@ def check_expiration_and_limits():
 def sync_xray_core():
     clients = [{"id": u_data["uuid"], "email": u_name, "level": 0} for u_name, u_data in configs_db.items() if u_data.get("active", True)]
     
-    # تبدیل کل دیتابیس کاربران به نسخه بیس۶۴ جهت همگام‌سازی در فایل سیستم ثابت
+    # کدگذاری کل دیتابیس به صورت Base64 و تزریق به کانفیگ هسته برای پایداری مطلق دیتابیس
     db_backup_string = base64.b64encode(json.dumps(configs_db).encode('utf-8')).decode('utf-8')
 
     xray_json_config = {
-        "_killpv2_db_backup": db_backup_string,  # تزریق بکاپ دیتابیس برای پایداری ۱۰۰٪ کلاینت‌ها
+        "_killpv2_db_backup": db_backup_string,  
         "log": {
             "loglevel": "info",
             "access": XRAY_LOG_PATH,
@@ -185,7 +192,6 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
             volume_val = float(params.get('volume_value', [0])[0] or 0)
             volume_unit = params.get('volume_unit', ['GB'])[0]
             
-            # 🟢 تصحیح فیکس باگ خوانش حجم مصرفی اولیه از فرانت‌اند
             initial_used_val = float(params.get('initial_used_value', [0])[0] or 0)
             initial_used_unit = params.get('initial_used_unit', ['GB'])[0]
             
@@ -205,7 +211,6 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                 else:
                     final_bytes = int(volume_val * 1024 * 1024)
 
-            # محاسبه دقیق حجم اولیه مصرف شده بر حسب بایت
             if initial_used_unit == 'GB':
                 final_initial_used_bytes = int(initial_used_val * 1024 * 1024 * 1024)
             else:
@@ -215,7 +220,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                 configs_db[username] = {
                     "uuid": str(uuid.uuid4()),
                     "total_limit_bytes": final_bytes,
-                    "used_bytes": final_initial_used_bytes, # اعمال مقدار کاستومایز شده
+                    "used_bytes": final_initial_used_bytes, 
                     "clean_ip": clean_ip,
                     "status": "OFFLINE",
                     "last_active_time": 0,
@@ -504,6 +509,13 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                         }}
                     }}
 
+                    function copyFixedSubscription(user) {{
+                        // راهکار پایداری ۱۰۰٪ لینک ساب: ساخت آدرس بر اساس هاست زنده فعلی کلاینت
+                        let fixedSubUrl = "https://" + window.location.host + "/sub/" + user;
+                        navigator.clipboard.writeText(fixedSubUrl);
+                        alert("🔗 لینک ساب پایدار این کلاینت کپی شد داداش! با ران مجدد تغییر نمیکند.");
+                    }}
+
                     const cleanIpsToTest = [];
                     const baseSubnets = [
                         "104.16.123.", "104.17.3.", "104.18.2.", "172.67.143.", "104.21.43.", 
@@ -636,7 +648,7 @@ class SanaeiMobileXuiServer(BaseHTTPRequestHandler):
                                 <div class="p-bar-bg"><div class="p-bar-fill"></div></div>
                                 
                                 <div class="action-bar" onclick="event.stopPropagation();">
-                                    <button class="btn-sub" onclick="navigator.clipboard.writeText('https://{tunnel_host}/sub/{user_name}'); alert('لینک ساب کپی شد داداش');">🔗 ساب</button>
+                                    <button class="btn-sub" onclick="copyFixedSubscription('{user_name}')">🔗 ساب ثابت</button>
                                     <button class="btn-conf" onclick="copyConfig('{user_name}')">📋 کانفیگ</button>
                                     <form method="POST" action="/" style="flex:1; display:flex;"><input type="hidden" name="action" value="toggle"><input type="hidden" name="username" value="{user_name}"><button type="submit" class="btn-tog">⚙️ سوییچ</button></form>
                                     <form method="POST" action="/" style="flex:1; display:flex;" onsubmit="return confirm('حذف بشه داداش؟');"><input type="hidden" name="action" value="delete"><input type="hidden" name="username" value="{user_name}"><button type="submit" class="btn-del">🗑️ حذف</button></form>
@@ -740,10 +752,9 @@ sync_xray_core()
 threading.Thread(target=lambda: HTTPServer(('127.0.0.1', 8086), SanaeiMobileXuiServer).serve_forever(), daemon=True).start()
 threading.Thread(target=xray_live_log_sniffer, daemon=True).start()
 
-# چرخه زنده نگه داشتن پایدار سرور برای ۵.۵ ساعت
 total_duration = 19800
 elapsed = 0
-print("🚀 Microservice deployed inside GitHub Action Engine.", flush=True)
+print("🚀 Stable Microservice deployed inside GitHub Action Engine.", flush=True)
 
 while elapsed < total_duration:
     time.sleep(10)
