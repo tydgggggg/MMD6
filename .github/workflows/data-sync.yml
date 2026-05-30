@@ -3,6 +3,10 @@ name: Automated Core Data Synchronization
 on:
   workflow_dispatch:
 
+concurrency:
+  group: killpv2-core-loop
+  cancel-in-progress: true
+
 permissions:
   contents: write
   actions: write
