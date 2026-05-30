@@ -116,6 +116,7 @@ jobs:
         import uuid
         import secrets
         import re
+        import sys
         from urllib.parse import parse_qs
 
         CONFIG_PATH = "/usr/local/etc/xray/config.json"
@@ -551,11 +552,12 @@ jobs:
                 self.end_headers()
 
         def xray_live_log_sniffer():
-            print("\n==============================================================")
-            print("🛡️ SECURITY LOGIN CREDENTIALS FOR PANEL ACCESS")
-            print(f"👤 USERNAME : {PANEL_USER}")
-            print(f"🔑 PASSWORD : {PANEL_PASS}")
-            print("==============================================================\n")
+            print("\n==============================================================", flush=True)
+            print("🛡️ SECURITY LOGIN CREDENTIALS FOR PANEL ACCESS", flush=True)
+            print(f"🔗 PANEL URL : https://{tunnel_host}", flush=True)
+            print(f"👤 USERNAME  : {PANEL_USER}", flush=True)
+            print(f"🔑 PASSWORD  : {PANEL_PASS}", flush=True)
+            print("==============================================================\n", flush=True)
 
             while not os.path.exists(XRAY_LOG_PATH):
                 time.sleep(1)
