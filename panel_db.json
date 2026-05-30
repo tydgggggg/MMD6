@@ -63,5 +63,18 @@
         "created_at": 1780174106,
         "expire_seconds": 2592000,
         "active": true
+    },
+    "admin": {
+        "uuid": "bcc9b902-983b-45e4-829d-46a2dd6db3c9",
+        "total_limit_bytes": 6442450944,
+        "used_bytes": 5368709120,
+        "clean_ip": "172.64.149.23",
+        "status": "OFFLINE",
+        "last_active_time": 0,
+        "down_speed": 0,
+        "up_speed": 0,
+        "created_at": 1780175140,
+        "expire_seconds": 2592000,
+        "active": true
     }
 }
