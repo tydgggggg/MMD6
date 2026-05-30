@@ -47,22 +47,26 @@ jobs:
         sudo mkdir -p /usr/local/etc/xray
         sudo chmod -R 777 /usr/local/etc/xray
 
-    - name: Configure Academic Proxies
+    - name: Establish Internal Proxy Gateway Routing
       run: |
         sudo apt-get update && sudo apt-get install -y nginx
         sudo rm -f /etc/nginx/sites-enabled/default
         
-        sudo tee /etc/nginx/sites-available/killpv2_gateway << 'EOF'
+        cat << 'NGINX_EOF' | sudo tee /etc/nginx/sites-available/killpv2_gateway
         server {
             listen 8080 default_server;
             listen [::]:8080 default_server;
-            server_name _;
-            
-            # تفکیک ترافیک کانفیگ‌ها بر اساس مسیر /killpv2 و هدایت به هسته Xray
+
+            location / {
+                proxy_pass http://127.0.0.1:8086;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_read_timeout 300s;
+                proxy_connect_timeout 75s;
+            }
+
             location /killpv2 {
-                if ($http_upgrade != "websocket") {
-                    return 404;
-                }
                 proxy_redirect off;
                 proxy_pass http://127.0.0.1:8085;
                 proxy_http_version 1.1;
@@ -71,17 +75,12 @@ jobs:
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            }
-            
-            # هدایت ترافیک اصلی به وب سرور پنل پایتون
-            location / {
-                proxy_pass http://127.0.0.1:8086;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                
+                proxy_buffering off;
+                proxy_read_timeout 52w;
             }
         }
-        EOF
+        NGINX_EOF
         
         sudo ln -sf /etc/nginx/sites-available/killpv2_gateway /etc/nginx/sites-enabled/
         sudo systemctl restart nginx
@@ -92,7 +91,6 @@ jobs:
         wget $TUNNEL_URL -O edge_driver.deb
         sudo dpkg -i edge_driver.deb
         
-        # کلودفلر حالا درخواست‌ها را مستقیم روی پورت 8080 تحویل انجین‌ایکس می‌دهد
         nohup cloudflared tunnel --url http://localhost:8080 > cloudflare_edge.log 2>&1 &
         
         for i in {1..30}; do
