@@ -22,13 +22,13 @@ jobs:
     - name: Install Critical Network Dependencies
       run: |
         sudo apt-get update
-        # 🟢 اصلاح شد: ابزار killall داخل پکیج psmisc قرار دارد
         sudo apt-get install -y psmisc wget curl jq unzip
         pip install requests
 
     - name: Install and Setup Xray Core System
       run: |
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+        # 🟢 دیباگ شد: اضافه کردن آپشن‌های نصب بی‌صدا و بدون توقف برای گیت‌هاب
+        sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --preview
         sudo mkdir -p /usr/local/etc/xray
         sudo chmod 777 /usr/local/etc/xray
 
