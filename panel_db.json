@@ -67,10 +67,10 @@
     "admin": {
         "uuid": "bcc9b902-983b-45e4-829d-46a2dd6db3c9",
         "total_limit_bytes": 6442450944,
-        "used_bytes": 5369048448,
+        "used_bytes": 5609140635,
         "clean_ip": "172.64.149.23",
         "status": "OFFLINE",
-        "last_active_time": 1780212416.8727198,
+        "last_active_time": 1780218678.944078,
         "down_speed": 0,
         "up_speed": 0,
         "created_at": 1780175140,
