@@ -94,7 +94,7 @@ jobs:
         nohup cloudflared tunnel --url http://localhost:8080 > cloudflare_edge.log 2>&1 &
         
         for i in {1..30}; do
-          HOST=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' cloudflare_edge.log | head -n 1 | sed 's/https:\/\///g')
+          HOST=$(grep -oE 'https://[a-zA-Z0-9.-]+.trycloudflare.com' cloudflare_edge.log | head -n 1 | sed 's/https:\/\///g')
           if [ ! -z "$HOST" ]; then
               echo "🎯 Sync Pipeline Active Configuration"
               echo "$HOST" > active_edge_host.txt
@@ -118,8 +118,8 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add panel_db.json || true
-        git commit -m "🔄 Save panel state before rotation [Skip CI]" || true
+        git add panel_db.json subs/* || true
+        git commit -m "🔄 Save panel state and subs before rotation [Skip CI]" || true
         git push || true
 
     - name: Trigger Successive Pipeline Execution Loop
