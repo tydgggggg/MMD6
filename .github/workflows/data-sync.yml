@@ -22,7 +22,8 @@ jobs:
     - name: Install Critical Network Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y killall wget curl jq unzip
+        # 🟢 اصلاح شد: ابزار killall داخل پکیج psmisc قرار دارد
+        sudo apt-get install -y psmisc wget curl jq unzip
         pip install requests
 
     - name: Install and Setup Xray Core System
@@ -58,7 +59,7 @@ jobs:
         # چرخه انتظار به مدت ۵.۵ ساعت قبل از تمدید مجدد اکشنز
         sleep 19500
         
-        # 🟢 راه‌اندازی زنجیره‌ای مجدد و خودکار بدون باگ نام فایل
+        # راه‌اندازی زنجیره‌ای مجدد و خودکار بدون باگ نام فایل
         echo "🔄 تمدید ایمن زنجیره سرور برای جلوگیری از قطع شدن اتصالات..."
         curl -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
           -H "Accept: application/vnd.github.v3+json" \
